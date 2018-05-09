@@ -6,23 +6,23 @@ extern crate combine;
 use std::collections::HashMap;
 
 #[derive(Clone)]
-pub enum Ast {
-    Lit(Value),
-    Variable(String),
-    Call(Box<Ast>, Vec<Ast>),
-    Define(String, Box<Ast>),
+pub enum Ast<'a> {
+    Lit(Value<'a>),
+    Variable(&'a str),
+    Call(Box<Ast<'a>>, Vec<Ast<'a>>),
+    Define(&'a str, Box<Ast<'a>>),
 }
 
 #[derive(Clone)]
-pub enum Value {
+pub enum Value<'a> {
     Void,
     False,
     Int(u64),
-    Function(Vec<String>, Vec<Ast>),
+    Function(Vec<&'a str>, Vec<Ast<'a>>),
     InbuiltFunc(fn(Vec<Value>) -> Value),
 }
 
-impl PartialEq for Value {
+impl<'a> PartialEq for Value<'a> {
     fn eq(&self, other: &Self) -> bool {
         use Value::*;
 
@@ -35,7 +35,7 @@ impl PartialEq for Value {
     }
 }
 
-pub fn eval(program: Ast, variables: &mut HashMap<String, Value>) -> Value {
+pub fn eval<'a>(program: Ast<'a>, variables: &mut HashMap<&'a str, Value<'a>>) -> Value<'a> {
     use self::Ast::*;
     use self::Value::*;
 
@@ -91,7 +91,8 @@ pub fn eval(program: Ast, variables: &mut HashMap<String, Value>) -> Value {
 }
 
 parser! {
-    pub fn expr[I]()(I) -> Ast where [I: combine::Stream<Item = char>] {
+    pub fn expr['a, I]()(I) -> Ast<'a> where [I: combine::Stream<Item = char, Range = &'a str> + combine::RangeStreamOnce] {
+        use combine::parser::range::recognize;
         use combine::parser::char::*;
         use combine::*;
 
@@ -108,15 +109,15 @@ parser! {
         let lambda = char('\\');
         let eq = char('=');
         let flse = white!(string("#f")).map(|_| Ast::Lit(::Value::False));
-        let ident = || white!(many1::<String, _>(letter()));
+        let ident = || white!(recognize(skip_many1(letter())).map(|chars: &str| chars));
         let function = (
             white!(lambda),
             white!(between(char('('), char(')'), many::<Vec<_>, _>(ident()))),
             many::<Vec<_>, _>(expr()),
         ).map(|(_, a, b)| Ast::Lit(::Value::Function(a, b)));
         let define = (white!(eq), ident(), expr()).map(|(_, a, b)| Ast::Define(a, Box::new(b)));
-        let lit_num = many1::<String, _>(digit())
-            .map(|i| Ast::Lit(::Value::Int(i.parse().expect("Parsing integer failed"))));
+        let lit_num = recognize(skip_many1(digit()))
+            .map(|i: &str| Ast::Lit(::Value::Int(i.parse().expect("Parsing integer failed"))));
         let call = (expr(), many(expr())).map(|(func, args)| Ast::Call(Box::new(func), args));
 
         white!(choice!(
@@ -350,7 +351,7 @@ someval
         }
 
         let mut env = HashMap::new();
-        env.insert("test".to_owned(), Value::InbuiltFunc(callable));
+        env.insert("test", Value::InbuiltFunc(callable));
 
         let (program, _) = expr().easy_parse(DEEP_NESTING).unwrap();
 
@@ -363,9 +364,9 @@ someval
 
         let mut env = HashMap::new();
 
-        env.insert("eq".to_owned(), Value::InbuiltFunc(eq));
-        env.insert("add".to_owned(), Value::InbuiltFunc(add));
-        env.insert("if".to_owned(), Value::InbuiltFunc(if_));
+        env.insert("eq", Value::InbuiltFunc(eq));
+        env.insert("add", Value::InbuiltFunc(add));
+        env.insert("if", Value::InbuiltFunc(if_));
 
         let (program, _) = ::combine::many1::<Vec<_>, _>(expr())
             .easy_parse(REAL_CODE)
@@ -396,7 +397,7 @@ someval
 
         let mut env = HashMap::new();
 
-        env.insert("ignore".to_owned(), Value::InbuiltFunc(ignore));
+        env.insert("ignore", Value::InbuiltFunc(ignore));
 
         b.iter(|| black_box(eval(program.clone(), &mut env)));
     }
