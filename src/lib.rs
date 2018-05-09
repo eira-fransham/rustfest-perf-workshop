@@ -9,7 +9,7 @@ use std::collections::HashMap;
 pub enum Ast<'a> {
     Lit(Value<'a>),
     Variable(&'a str),
-    Call(Box<Ast<'a>>, Vec<Ast<'a>>),
+    Call(Vec<Ast<'a>>),
     Define(&'a str, Box<Ast<'a>>),
 }
 
@@ -45,7 +45,8 @@ pub fn eval<'a>(program: &Ast<'a>, variables: &mut HashMap<&'a str, Value<'a>>) 
             Some(v) => v.clone(),
             _ => panic!("Variable does not exist: {}", &name),
         },
-        Call(func, arguments) => {
+        Call(call_args) => {
+            let (func, arguments) = call_args.split_first().unwrap();
             let func = eval(&*func, variables);
 
             match func {
@@ -118,7 +119,7 @@ parser! {
         let define = (white!(eq), ident(), expr()).map(|(_, a, b)| Ast::Define(a, Box::new(b)));
         let lit_num = recognize(skip_many1(digit()))
             .map(|i: &str| Ast::Lit(::Value::Int(i.parse().expect("Parsing integer failed"))));
-        let call = (expr(), many(expr())).map(|(func, args)| Ast::Call(Box::new(func), args));
+        let call = (many1(expr())).map(Ast::Call);
 
         white!(choice!(
             flse,
