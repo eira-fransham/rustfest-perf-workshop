@@ -4,6 +4,7 @@
 extern crate combine;
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Clone)]
 pub enum Ast<'a> {
@@ -13,12 +14,17 @@ pub enum Ast<'a> {
     Define(&'a str, Box<Ast<'a>>),
 }
 
+pub struct Func<'a> {
+    arguments: Vec<&'a str>,
+    body: Vec<Ast<'a>>,
+}
+
 #[derive(Clone)]
 pub enum Value<'a> {
     Void,
     False,
     Int(u64),
-    Function(Vec<&'a str>, Vec<Ast<'a>>),
+    Function(Rc<Func<'a>>),
     InbuiltFunc(fn(Vec<Value>) -> Value),
 }
 
@@ -50,10 +56,15 @@ pub fn eval<'a>(program: &Ast<'a>, variables: &mut HashMap<&'a str, Value<'a>>) 
             let func = eval(&*func, variables);
 
             match func {
-                Function(args, body) => {
+                Function(func) => {
                     // Start a new scope, so all variables defined in the body of the
                     // function don't leak into the surrounding scope.
                     let mut new_scope = variables.clone();
+
+                    let &Func {
+                        arguments: ref args,
+                        ref body,
+                    } = &*func;
 
                     if arguments.len() != args.len() {
                         println!("Called function with incorrect number of arguments (expected {}, got {})", args.len(), arguments.len());
@@ -66,7 +77,7 @@ pub fn eval<'a>(program: &Ast<'a>, variables: &mut HashMap<&'a str, Value<'a>>) 
 
                     let mut out = Void;
 
-                    for stmt in &body {
+                    for stmt in body {
                         out = eval(stmt, &mut new_scope);
                     }
 
@@ -115,7 +126,7 @@ parser! {
             white!(lambda),
             white!(between(char('('), char(')'), many::<Vec<_>, _>(ident()))),
             many::<Vec<_>, _>(expr()),
-        ).map(|(_, a, b)| Ast::Lit(::Value::Function(a, b)));
+        ).map(|(_, a, b)| Ast::Lit(::Value::Function(Func { arguments: a, body: b }.into())));
         let define = (white!(eq), ident(), expr()).map(|(_, a, b)| Ast::Define(a, Box::new(b)));
         let lit_num = recognize(skip_many1(digit()))
             .map(|i: &str| Ast::Lit(::Value::Int(i.parse().expect("Parsing integer failed"))));
