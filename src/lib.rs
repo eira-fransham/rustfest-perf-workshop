@@ -3,6 +3,7 @@
 #[macro_use]
 extern crate combine;
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -41,7 +42,7 @@ impl<'a> PartialEq for Value<'a> {
     }
 }
 
-pub fn eval<'a>(program: &Ast<'a>, variables: &mut HashMap<&'a str, Value<'a>>) -> Value<'a> {
+pub fn eval<'a>(program: &Ast<'a>, variables: &mut Cow<HashMap<&'a str, Value<'a>>>) -> Value<'a> {
     use self::Ast::*;
     use self::Value::*;
 
@@ -57,10 +58,6 @@ pub fn eval<'a>(program: &Ast<'a>, variables: &mut HashMap<&'a str, Value<'a>>) 
 
             match func {
                 Function(func) => {
-                    // Start a new scope, so all variables defined in the body of the
-                    // function don't leak into the surrounding scope.
-                    let mut new_scope = variables.clone();
-
                     let &Func {
                         arguments: ref args,
                         ref body,
@@ -70,10 +67,20 @@ pub fn eval<'a>(program: &Ast<'a>, variables: &mut HashMap<&'a str, Value<'a>>) 
                         println!("Called function with incorrect number of arguments (expected {}, got {})", args.len(), arguments.len());
                     }
 
-                    for (name, val) in args.into_iter().zip(arguments) {
-                        let val = eval(val, variables);
-                        new_scope.insert(name, val);
-                    }
+                    let mut new_scope: Cow<HashMap<_, _>> = if args.len() == 0 {
+                        Cow::Borrowed(variables)
+                    } else {
+                        // Start a new scope, so all variables defined in the body of the
+                        // function don't leak into the surrounding scope.
+                        let mut new_scope = variables.clone().into_owned();
+
+                        for (name, val) in args.into_iter().zip(arguments) {
+                            let val = eval(val, variables);
+                            new_scope.insert(name, val);
+                        }
+
+                        Cow::Owned(new_scope)
+                    };
 
                     let mut out = Void;
 
@@ -95,7 +102,7 @@ pub fn eval<'a>(program: &Ast<'a>, variables: &mut HashMap<&'a str, Value<'a>>) 
         Define(name, value) => {
             let value = eval(&*value, variables);
 
-            variables.insert(name, value);
+            variables.to_mut().insert(name, value);
 
             Void
         }
@@ -146,6 +153,7 @@ mod benches {
     extern crate test;
 
     use combine::Parser;
+    use std::borrow::Cow;
 
     use self::test::{black_box, Bencher};
 
@@ -367,7 +375,7 @@ someval
 
         let (program, _) = expr().easy_parse(DEEP_NESTING).unwrap();
 
-        b.iter(|| black_box(eval(&program, &mut env)));
+        b.iter(|| black_box(eval(&program, &mut Cow::Borrowed(&env))));
     }
 
     #[bench]
@@ -385,7 +393,7 @@ someval
             .unwrap();
 
         b.iter(|| {
-            let mut env = env.clone();
+            let mut env = Cow::Borrowed(&env);
             for line in &program {
                 black_box(eval(&line, &mut env));
             }
@@ -411,7 +419,7 @@ someval
 
         env.insert("ignore", Value::InbuiltFunc(ignore));
 
-        b.iter(|| black_box(eval(&program, &mut env)));
+        b.iter(|| black_box(eval(&program, &mut Cow::Borrowed(&env))));
     }
 
     #[bench]
@@ -419,7 +427,7 @@ someval
         use std::collections::HashMap;
 
         let (program, _) = expr().easy_parse(NESTED_FUNC).unwrap();
-        let mut env = HashMap::new();
-        b.iter(|| black_box(eval(&program, &mut env)));
+        let env = HashMap::new();
+        b.iter(|| black_box(eval(&program, &mut Cow::Borrowed(&env))));
     }
 }
