@@ -2,10 +2,12 @@
 
 #[macro_use]
 extern crate combine;
+extern crate fnv;
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::rc::Rc;
+
+use fnv::FnvHashMap;
 
 #[derive(Clone)]
 pub enum Ast<'a> {
@@ -42,7 +44,7 @@ impl<'a> PartialEq for Value<'a> {
     }
 }
 
-pub fn eval<'a>(program: &Ast<'a>, variables: &mut Cow<HashMap<&'a str, Value<'a>>>) -> Value<'a> {
+pub fn eval<'a>(program: &Ast<'a>, variables: &mut Cow<FnvHashMap<&'a str, Value<'a>>>) -> Value<'a> {
     use self::Ast::*;
     use self::Value::*;
 
@@ -67,7 +69,7 @@ pub fn eval<'a>(program: &Ast<'a>, variables: &mut Cow<HashMap<&'a str, Value<'a
                         println!("Called function with incorrect number of arguments (expected {}, got {})", args.len(), arguments.len());
                     }
 
-                    let mut new_scope: Cow<HashMap<_, _>> = if args.len() == 0 {
+                    let mut new_scope: Cow<FnvHashMap<_, _>> = if args.len() == 0 {
                         Cow::Borrowed(variables)
                     } else {
                         // Start a new scope, so all variables defined in the body of the
@@ -359,7 +361,7 @@ someval
     // our testing code needs in order to run.
     #[bench]
     fn run_deep_nesting(b: &mut Bencher) {
-        use std::collections::HashMap;
+        use fnv::FnvHashMap;
 
         // This just returns a function so `((whatever))` (equivalent
         // to `(whatever())()`) does something useful. Specifically
@@ -370,7 +372,7 @@ someval
             Value::InbuiltFunc(callable)
         }
 
-        let mut env = HashMap::new();
+        let mut env = FnvHashMap::default();
         env.insert("test", Value::InbuiltFunc(callable));
 
         let (program, _) = expr().easy_parse(DEEP_NESTING).unwrap();
@@ -380,9 +382,9 @@ someval
 
     #[bench]
     fn run_real_code(b: &mut Bencher) {
-        use std::collections::HashMap;
+        use fnv::FnvHashMap;
 
-        let mut env = HashMap::new();
+        let mut env = FnvHashMap::default();
 
         env.insert("eq", Value::InbuiltFunc(eq));
         env.insert("add", Value::InbuiltFunc(add));
@@ -402,7 +404,7 @@ someval
 
     #[bench]
     fn run_many_variables(b: &mut Bencher) {
-        use std::collections::HashMap;
+        use fnv::FnvHashMap;
 
         // This just takes anything and returns `Void`. We just
         // want a function that can take any number of arguments
@@ -415,7 +417,7 @@ someval
 
         let (program, _) = expr().easy_parse(MANY_VARIABLES).unwrap();
 
-        let mut env = HashMap::new();
+        let mut env = FnvHashMap::default();
 
         env.insert("ignore", Value::InbuiltFunc(ignore));
 
@@ -424,10 +426,10 @@ someval
 
     #[bench]
     fn run_nested_func(b: &mut Bencher) {
-        use std::collections::HashMap;
+        use fnv::FnvHashMap;
 
         let (program, _) = expr().easy_parse(NESTED_FUNC).unwrap();
-        let env = HashMap::new();
+        let env = FnvHashMap::default();
         b.iter(|| black_box(eval(&program, &mut Cow::Borrowed(&env))));
     }
 }

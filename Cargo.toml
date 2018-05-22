@@ -5,6 +5,7 @@ authors = ["Jef <jackefransham@gmail.com>"]
 
 [dependencies]
 combine = "3.2.0"
+fnv = "1.0.6"
 
 [profile.bench]
 debug = true
