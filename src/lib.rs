@@ -6,23 +6,23 @@ extern crate combine;
 use std::collections::HashMap;
 
 #[derive(Clone)]
-pub enum Ast {
-    Lit(Value),
-    Variable(String),
-    Call(Box<Ast>, Vec<Ast>),
-    Define(String, Box<Ast>),
+pub enum Ast<'src> {
+    Lit(Value<'src>),
+    Variable(&'src str),
+    Call(Box<Ast<'src>>, Vec<Ast<'src>>),
+    Define(&'src str, Box<Ast<'src>>),
 }
 
 #[derive(Clone)]
-pub enum Value {
+pub enum Value<'src> {
     Void,
     False,
     Int(u64),
-    Function(Vec<String>, Vec<Ast>),
-    InbuiltFunc(fn(Vec<Value>) -> Value),
+    Function(Vec<&'src str>, Vec<Ast<'src>>),
+    InbuiltFunc(fn(Vec<Value<'src>>) -> Value<'src>),
 }
 
-impl PartialEq for Value {
+impl<'src> PartialEq for Value<'src> {
     fn eq(&self, other: &Self) -> bool {
         use Value::*;
 
@@ -35,7 +35,7 @@ impl PartialEq for Value {
     }
 }
 
-pub fn eval(program: Ast, variables: &mut HashMap<String, Value>) -> Value {
+pub fn eval<'src>(program: Ast<'src>, variables: &mut HashMap<&'src str, Value<'src>>) -> Value<'src> {
     use self::Ast::*;
     use self::Value::*;
 
@@ -60,7 +60,7 @@ pub fn eval(program: Ast, variables: &mut HashMap<String, Value>) -> Value {
 
                     for (name, val) in args.into_iter().zip(arguments) {
                         let val = eval(val, variables);
-                        new_scope.insert(name, val);
+                        new_scope.insert(&name, val);
                     }
 
                     let mut out = Void;
@@ -83,7 +83,7 @@ pub fn eval(program: Ast, variables: &mut HashMap<String, Value>) -> Value {
         Define(name, value) => {
             let value = eval(*value, variables);
 
-            variables.insert(name, value);
+            variables.insert(&name, value);
 
             Void
         }
@@ -91,8 +91,12 @@ pub fn eval(program: Ast, variables: &mut HashMap<String, Value>) -> Value {
 }
 
 parser! {
-    pub fn expr[I]()(I) -> Ast where [I: combine::Stream<Item = char>] {
+    pub fn expr['a, I]()(I) -> Ast<'a> where [
+        I: combine::Stream<Item = char, Range = &'a str> +
+        combine::RangeStreamOnce
+    ] {
         use combine::parser::char::*;
+        use combine::parser::range::*;
         use combine::*;
 
         macro_rules! white {
@@ -108,7 +112,7 @@ parser! {
         let lambda = char('\\');
         let eq = char('=');
         let flse = white!(string("#f")).map(|_| Ast::Lit(::Value::False));
-        let ident = || white!(many1::<String, _>(letter()));
+        let ident = || white!(recognize(skip_many1(letter())));
         let function = (
             white!(lambda),
             white!(between(char('('), char(')'), many::<Vec<_>, _>(ident()))),
@@ -350,7 +354,7 @@ someval
         }
 
         let mut env = HashMap::new();
-        env.insert("test".to_owned(), Value::InbuiltFunc(callable));
+        env.insert("test", Value::InbuiltFunc(callable));
 
         let (program, _) = expr().easy_parse(DEEP_NESTING).unwrap();
 
@@ -363,9 +367,9 @@ someval
 
         let mut env = HashMap::new();
 
-        env.insert("eq".to_owned(), Value::InbuiltFunc(eq));
-        env.insert("add".to_owned(), Value::InbuiltFunc(add));
-        env.insert("if".to_owned(), Value::InbuiltFunc(if_));
+        env.insert("eq", Value::InbuiltFunc(eq));
+        env.insert("add", Value::InbuiltFunc(add));
+        env.insert("if", Value::InbuiltFunc(if_));
 
         let (program, _) = ::combine::many1::<Vec<_>, _>(expr())
             .easy_parse(REAL_CODE)
@@ -396,7 +400,7 @@ someval
 
         let mut env = HashMap::new();
 
-        env.insert("ignore".to_owned(), Value::InbuiltFunc(ignore));
+        env.insert("ignore", Value::InbuiltFunc(ignore));
 
         b.iter(|| black_box(eval(program.clone(), &mut env)));
     }
