@@ -2,8 +2,9 @@
 
 #[macro_use]
 extern crate combine;
+extern crate fxhash;
 
-use std::collections::HashMap;
+use fxhash::FxHashMap as HashMap;
 use std::cell::{Ref, RefCell};
 
 pub struct Function<'src> {
@@ -166,6 +167,7 @@ mod benches {
     extern crate test;
 
     use combine::Parser;
+    use fxhash::FxHashMap as HashMap;
 
     use self::test::{black_box, Bencher};
 
@@ -386,8 +388,6 @@ someval
     // our testing code needs in order to run.
     #[bench]
     fn run_deep_nesting(b: &mut Bencher) {
-        use std::collections::HashMap;
-
         // This just returns a function so `((whatever))` (equivalent
         // to `(whatever())()`) does something useful. Specifically
         // it just returns itself. We try to do as little work as
@@ -397,7 +397,7 @@ someval
             Value::InbuiltFunc(callable)
         }
 
-        let mut env = HashMap::new();
+        let mut env = HashMap::default();
         env.insert("test", Value::InbuiltFunc(callable));
 
         let functions = Functions::default();
@@ -408,9 +408,7 @@ someval
 
     #[bench]
     fn run_real_code(b: &mut Bencher) {
-        use std::collections::HashMap;
-
-        let mut env = HashMap::new();
+        let mut env = HashMap::default();
 
         env.insert("eq", Value::InbuiltFunc(eq));
         env.insert("add", Value::InbuiltFunc(add));
@@ -432,8 +430,6 @@ someval
 
     #[bench]
     fn run_many_variables(b: &mut Bencher) {
-        use std::collections::HashMap;
-
         // This just takes anything and returns `Void`. We just
         // want a function that can take any number of arguments
         // but we don't want that function to do anything useful
@@ -446,7 +442,7 @@ someval
         let functions = Functions::default();
         let (program, _) = expr(&functions).easy_parse(MANY_VARIABLES).unwrap();
 
-        let mut env = HashMap::new();
+        let mut env = HashMap::default();
 
         env.insert("ignore", Value::InbuiltFunc(ignore));
 
@@ -455,11 +451,9 @@ someval
 
     #[bench]
     fn run_nested_func(b: &mut Bencher) {
-        use std::collections::HashMap;
-
         let functions = Functions::default();
         let (program, _) = expr(&functions).easy_parse(NESTED_FUNC).unwrap();
-        let mut env = HashMap::new();
+        let mut env = HashMap::default();
         b.iter(|| black_box(eval(&program, &mut env, &functions)));
     }
 }
