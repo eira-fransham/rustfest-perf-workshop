@@ -4,25 +4,52 @@
 extern crate combine;
 
 use std::collections::HashMap;
+use std::cell::{Ref, RefCell};
+
+pub struct Function<'src> {
+    args: Vec<&'src str>,
+    body: Vec<Ast<'src>>,
+}
+
+#[derive(Copy, Clone)]
+pub struct InternedFunction(usize);
+
+#[derive(Default)]
+pub struct Functions<'src> {
+    storage: RefCell<Vec<Function<'src>>>,
+}
+
+impl<'src> Functions<'src> {
+    pub fn add(&self, args: Vec<&'src str>, body: Vec<Ast<'src>>) -> InternedFunction {
+        let mut storage = self.storage.borrow_mut();
+        let id = InternedFunction(storage.len());
+        storage.push(Function { args, body });
+        id
+    }
+
+    pub fn get(&self, interned: InternedFunction) -> Ref<Function<'src>> {
+        Ref::map(self.storage.borrow(), |s| s.get(interned.0).expect("interned function not present"))
+    }
+}
 
 #[derive(Clone)]
 pub enum Ast<'src> {
-    Lit(Value<'src>),
+    Lit(Value),
     Variable(&'src str),
     Call(Box<Ast<'src>>, Vec<Ast<'src>>),
     Define(&'src str, Box<Ast<'src>>),
 }
 
-#[derive(Clone)]
-pub enum Value<'src> {
+#[derive(Copy, Clone)]
+pub enum Value {
     Void,
     False,
     Int(u64),
-    Function(Vec<&'src str>, Vec<Ast<'src>>),
-    InbuiltFunc(fn(Vec<Value<'src>>) -> Value<'src>),
+    Function(InternedFunction),
+    InbuiltFunc(fn(Vec<Value>) -> Value),
 }
 
-impl<'src> PartialEq for Value<'src> {
+impl<'src> PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         use Value::*;
 
@@ -35,7 +62,7 @@ impl<'src> PartialEq for Value<'src> {
     }
 }
 
-pub fn eval<'src>(program: &Ast<'src>, variables: &mut HashMap<&'src str, Value<'src>>) -> Value<'src> {
+pub fn eval<'src>(program: &Ast<'src>, variables: &mut HashMap<&'src str, Value>, functions: &Functions<'src>) -> Value {
     use self::Ast::*;
     use self::Value::*;
 
@@ -46,27 +73,29 @@ pub fn eval<'src>(program: &Ast<'src>, variables: &mut HashMap<&'src str, Value<
             _ => panic!("Variable does not exist: {}", &name),
         },
         Call(func, arguments) => {
-            let func = eval(func, variables);
+            let func = eval(func, variables, functions);
 
             match func {
-                Function(args, body) => {
+                //Function(args, body) => {
+                Function(interned) => {
                     // Start a new scope, so all variables defined in the body of the
                     // function don't leak into the surrounding scope.
                     let mut new_scope = variables.clone();
+                    let ::Function { ref args, ref body } = *functions.get(interned);
 
                     if arguments.len() != args.len() {
                         println!("Called function with incorrect number of arguments (expected {}, got {})", args.len(), arguments.len());
                     }
 
                     for (name, val) in args.into_iter().zip(arguments) {
-                        let val = eval(val, variables);
+                        let val = eval(val, variables, functions);
                         new_scope.insert(&name, val);
                     }
 
                     let mut out = Void;
 
                     for stmt in body {
-                        out = eval(&stmt, &mut new_scope);
+                        out = eval(&stmt, &mut new_scope, functions);
                     }
 
                     out
@@ -74,14 +103,14 @@ pub fn eval<'src>(program: &Ast<'src>, variables: &mut HashMap<&'src str, Value<
                 InbuiltFunc(func) => func(
                     arguments
                         .into_iter()
-                        .map(|ast| eval(ast, variables))
+                        .map(|ast| eval(ast, variables, functions))
                         .collect(),
                 ),
                 _ => panic!("Attempted to call a non-function"),
             }
         }
         Define(name, value) => {
-            let value = eval(value, variables);
+            let value = eval(value, variables, functions);
 
             variables.insert(&name, value);
 
@@ -91,7 +120,7 @@ pub fn eval<'src>(program: &Ast<'src>, variables: &mut HashMap<&'src str, Value<
 }
 
 parser! {
-    pub fn expr['a, I]()(I) -> Ast<'a> where [
+    pub fn expr['a, 'b, I](functions: &'b Functions<'a>)(I) -> Ast<'a> where [
         I: combine::Stream<Item = char, Range = &'a str> +
         combine::RangeStreamOnce
     ] {
@@ -116,12 +145,12 @@ parser! {
         let function = (
             white!(lambda),
             white!(between(char('('), char(')'), many::<Vec<_>, _>(ident()))),
-            many::<Vec<_>, _>(expr()),
-        ).map(|(_, a, b)| Ast::Lit(::Value::Function(a, b)));
-        let define = (white!(eq), ident(), expr()).map(|(_, a, b)| Ast::Define(a, Box::new(b)));
+            many::<Vec<_>, _>(expr(functions)),
+        ).map(|(_, a, b)| Ast::Lit(::Value::Function(functions.add(a, b))));
+        let define = (white!(eq), ident(), expr(functions)).map(|(_, a, b)| Ast::Define(a, Box::new(b)));
         let lit_num = recognize(skip_many1(digit()))
             .map(|i: &str| Ast::Lit(::Value::Int(i.parse().expect("Parsing integer failed"))));
-        let call = (expr(), many(expr())).map(|(func, args)| Ast::Call(Box::new(func), args));
+        let call = (expr(functions), many(expr(functions))).map(|(func, args)| Ast::Call(Box::new(func), args));
 
         white!(choice!(
             flse,
@@ -140,7 +169,7 @@ mod benches {
 
     use self::test::{black_box, Bencher};
 
-    use super::{eval, expr, Value};
+    use super::{eval, expr, Value, Functions};
 
     // First we need some helper functions. These are used with the `InbuiltFunc`
     // constructor and act as native functions, similar to how you'd add functions
@@ -301,22 +330,34 @@ someval
     // Now we run the benchmarks. The parsing ones are very simple...
     #[bench]
     fn parse_deep_nesting(b: &mut Bencher) {
-        b.iter(|| black_box(expr().easy_parse(DEEP_NESTING)))
+        b.iter(|| {
+            let functions = Functions::default();
+            black_box(expr(&functions).easy_parse(DEEP_NESTING))
+        })
     }
 
     #[bench]
     fn parse_many_variables(b: &mut Bencher) {
-        b.iter(|| black_box(expr().easy_parse(MANY_VARIABLES)))
+        b.iter(|| {
+            let functions = Functions::default();
+            black_box(expr(&functions).easy_parse(MANY_VARIABLES))
+        })
     }
 
     #[bench]
     fn parse_nested_func(b: &mut Bencher) {
-        b.iter(|| black_box(expr().easy_parse(NESTED_FUNC)))
+        b.iter(|| {
+            let functions = Functions::default();
+            black_box(expr(&functions).easy_parse(NESTED_FUNC))
+        })
     }
 
     #[bench]
     fn parse_real_code(b: &mut Bencher) {
-        b.iter(|| black_box(expr().easy_parse(REAL_CODE)))
+        b.iter(|| {
+            let functions = Functions::default();
+            black_box(expr(&functions).easy_parse(REAL_CODE))
+        })
     }
 
     // We only test parsing for this one. We could test the speed of
@@ -334,7 +375,10 @@ someval
               90 91 92 93 94 95 96 97 98 99))
         ";
 
-        b.iter(|| black_box(expr().easy_parse(program_text)))
+        b.iter(|| {
+            let functions = Functions::default();
+            black_box(expr(&functions).easy_parse(program_text))
+        })
     }
 
     // For the benchmarks that run the code we have to do a little more
@@ -356,9 +400,10 @@ someval
         let mut env = HashMap::new();
         env.insert("test", Value::InbuiltFunc(callable));
 
-        let (program, _) = expr().easy_parse(DEEP_NESTING).unwrap();
+        let functions = Functions::default();
+        let (program, _) = expr(&functions).easy_parse(DEEP_NESTING).unwrap();
 
-        b.iter(|| black_box(eval(&program, &mut env)));
+        b.iter(|| black_box(eval(&program, &mut env, &functions)));
     }
 
     #[bench]
@@ -371,14 +416,16 @@ someval
         env.insert("add", Value::InbuiltFunc(add));
         env.insert("if", Value::InbuiltFunc(if_));
 
-        let (program, _) = ::combine::many1::<Vec<_>, _>(expr())
+        let functions = Functions::default();
+
+        let (program, _) = ::combine::many1::<Vec<_>, _>(expr(&functions))
             .easy_parse(REAL_CODE)
             .unwrap();
 
         b.iter(|| {
             let mut env = env.clone();
             for line in &program {
-                black_box(eval(&line, &mut env));
+                black_box(eval(&line, &mut env, &functions));
             }
         });
     }
@@ -396,21 +443,23 @@ someval
             Value::Void
         }
 
-        let (program, _) = expr().easy_parse(MANY_VARIABLES).unwrap();
+        let functions = Functions::default();
+        let (program, _) = expr(&functions).easy_parse(MANY_VARIABLES).unwrap();
 
         let mut env = HashMap::new();
 
         env.insert("ignore", Value::InbuiltFunc(ignore));
 
-        b.iter(|| black_box(eval(&program, &mut env)));
+        b.iter(|| black_box(eval(&program, &mut env, &functions)));
     }
 
     #[bench]
     fn run_nested_func(b: &mut Bencher) {
         use std::collections::HashMap;
 
-        let (program, _) = expr().easy_parse(NESTED_FUNC).unwrap();
+        let functions = Functions::default();
+        let (program, _) = expr(&functions).easy_parse(NESTED_FUNC).unwrap();
         let mut env = HashMap::new();
-        b.iter(|| black_box(eval(&program, &mut env)));
+        b.iter(|| black_box(eval(&program, &mut env, &functions)));
     }
 }
