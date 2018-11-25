@@ -35,18 +35,18 @@ impl<'src> PartialEq for Value<'src> {
     }
 }
 
-pub fn eval<'src>(program: Ast<'src>, variables: &mut HashMap<&'src str, Value<'src>>) -> Value<'src> {
+pub fn eval<'src>(program: &Ast<'src>, variables: &mut HashMap<&'src str, Value<'src>>) -> Value<'src> {
     use self::Ast::*;
     use self::Value::*;
 
     match program {
-        Lit(val) => val,
-        Variable(name) => match variables.get(&name) {
+        Lit(val) => val.clone(),
+        Variable(name) => match variables.get(name) {
             Some(v) => v.clone(),
             _ => panic!("Variable does not exist: {}", &name),
         },
         Call(func, arguments) => {
-            let func = eval(*func, variables);
+            let func = eval(func, variables);
 
             match func {
                 Function(args, body) => {
@@ -66,7 +66,7 @@ pub fn eval<'src>(program: Ast<'src>, variables: &mut HashMap<&'src str, Value<'
                     let mut out = Void;
 
                     for stmt in body {
-                        out = eval(stmt, &mut new_scope);
+                        out = eval(&stmt, &mut new_scope);
                     }
 
                     out
@@ -81,7 +81,7 @@ pub fn eval<'src>(program: Ast<'src>, variables: &mut HashMap<&'src str, Value<'
             }
         }
         Define(name, value) => {
-            let value = eval(*value, variables);
+            let value = eval(value, variables);
 
             variables.insert(&name, value);
 
@@ -358,7 +358,7 @@ someval
 
         let (program, _) = expr().easy_parse(DEEP_NESTING).unwrap();
 
-        b.iter(|| black_box(eval(program.clone(), &mut env)));
+        b.iter(|| black_box(eval(&program, &mut env)));
     }
 
     #[bench]
@@ -378,7 +378,7 @@ someval
         b.iter(|| {
             let mut env = env.clone();
             for line in &program {
-                black_box(eval(line.clone(), &mut env));
+                black_box(eval(&line, &mut env));
             }
         });
     }
@@ -402,7 +402,7 @@ someval
 
         env.insert("ignore", Value::InbuiltFunc(ignore));
 
-        b.iter(|| black_box(eval(program.clone(), &mut env)));
+        b.iter(|| black_box(eval(&program, &mut env)));
     }
 
     #[bench]
@@ -411,6 +411,6 @@ someval
 
         let (program, _) = expr().easy_parse(NESTED_FUNC).unwrap();
         let mut env = HashMap::new();
-        b.iter(|| black_box(eval(program.clone(), &mut env)));
+        b.iter(|| black_box(eval(&program, &mut env)));
     }
 }
