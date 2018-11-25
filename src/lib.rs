@@ -119,8 +119,8 @@ parser! {
             many::<Vec<_>, _>(expr()),
         ).map(|(_, a, b)| Ast::Lit(::Value::Function(a, b)));
         let define = (white!(eq), ident(), expr()).map(|(_, a, b)| Ast::Define(a, Box::new(b)));
-        let lit_num = many1::<String, _>(digit())
-            .map(|i| Ast::Lit(::Value::Int(i.parse().expect("Parsing integer failed"))));
+        let lit_num = recognize(skip_many1(digit()))
+            .map(|i: &str| Ast::Lit(::Value::Int(i.parse().expect("Parsing integer failed"))));
         let call = (expr(), many(expr())).map(|(func, args)| Ast::Call(Box::new(func), args));
 
         white!(choice!(
