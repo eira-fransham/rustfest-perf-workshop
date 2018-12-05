@@ -5,32 +5,78 @@ extern crate combine;
 extern crate fxhash;
 
 use fxhash::FxHashMap as HashMap;
-use std::cell::{Ref, RefCell};
+use std::cell::RefCell;
 
-pub struct Function<'src> {
-    args: Vec<&'src str>,
-    body: Vec<Ast<'src>>,
+// We write our own `Range` type to derive `Copy`
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub struct Range<T> {
+    pub start: T,
+    pub end: T,
 }
 
 #[derive(Copy, Clone)]
 pub struct InternedFunction(usize);
 
+#[derive(Copy, Clone)]
+pub struct FunctionRanges {
+    args: Range<usize>,
+    body: Range<usize>,
+}
+
 #[derive(Default)]
 pub struct Functions<'src> {
-    storage: RefCell<Vec<Function<'src>>>,
+    ranges: Vec<FunctionRanges>,
+    args: Vec<&'src str>,
+    body: Vec<Ast<'src>>,
 }
 
 impl<'src> Functions<'src> {
+    pub fn get<'s>(&'s self, interned: InternedFunction) -> FunctionRef<'s, 'src> {
+        let ranges = self.ranges[interned.0];
+        FunctionRef {
+            args: &self.args[ranges.args.start..ranges.args.end],
+            body: &self.body[ranges.body.start..ranges.body.end],
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct FunctionsBuilder<'src> {
+    storage: RefCell<Functions<'src>>,
+}
+
+impl<'src> FunctionsBuilder<'src> {
     pub fn add(&self, args: Vec<&'src str>, body: Vec<Ast<'src>>) -> InternedFunction {
         let mut storage = self.storage.borrow_mut();
-        let id = InternedFunction(storage.len());
-        storage.push(Function { args, body });
+        let args_range = Range {
+            start: storage.args.len(),
+            end: storage.args.len() + args.len(),
+        };
+        let body_range = Range {
+            start: storage.body.len(),
+            end: storage.body.len() + body.len(),
+        };
+        storage.args.extend(args);
+        storage.body.extend(body);
+
+        let id = InternedFunction(storage.ranges.len());
+        storage.ranges.push(FunctionRanges {
+            args: args_range,
+            body: body_range,
+        });
+
         id
     }
 
-    pub fn get(&self, interned: InternedFunction) -> Ref<Function<'src>> {
-        Ref::map(self.storage.borrow(), |s| s.get(interned.0).expect("interned function not present"))
+    pub fn freeze(self) -> Functions<'src> {
+        self.storage.into_inner()
     }
+}
+
+#[derive(Copy, Clone)]
+pub struct FunctionRef<'functions, 'src> {
+    pub args: &'functions [&'src str],
+    pub body: &'functions [Ast<'src>],
 }
 
 #[derive(Clone)]
@@ -63,7 +109,11 @@ impl<'src> PartialEq for Value {
     }
 }
 
-pub fn eval<'src>(program: &Ast<'src>, variables: &mut HashMap<&'src str, Value>, functions: &Functions<'src>) -> Value {
+pub fn eval<'src>(
+    program: &Ast<'src>,
+    variables: &mut HashMap<&'src str, Value>,
+    functions: &Functions<'src>,
+) -> Value {
     use self::Ast::*;
     use self::Value::*;
 
@@ -77,26 +127,30 @@ pub fn eval<'src>(program: &Ast<'src>, variables: &mut HashMap<&'src str, Value>
             let func = eval(func, variables, functions);
 
             match func {
-                //Function(args, body) => {
                 Function(interned) => {
                     // Start a new scope, so all variables defined in the body of the
                     // function don't leak into the surrounding scope.
                     let mut new_scope = variables.clone();
-                    let ::Function { ref args, ref body } = *functions.get(interned);
+                    let fun = functions.get(interned);
 
-                    if arguments.len() != args.len() {
-                        println!("Called function with incorrect number of arguments (expected {}, got {})", args.len(), arguments.len());
+                    if arguments.len() != fun.args.len() {
+                        println!(
+                            "Called function with incorrect number of arguments \
+                             (expected {}, got {})",
+                            fun.args.len(),
+                            arguments.len()
+                        );
                     }
 
-                    for (name, val) in args.into_iter().zip(arguments) {
+                    for (name, val) in fun.args.into_iter().zip(arguments) {
                         let val = eval(val, variables, functions);
                         new_scope.insert(&name, val);
                     }
 
                     let mut out = Void;
 
-                    for stmt in body {
-                        out = eval(&stmt, &mut new_scope, functions);
+                    for stmt in fun.body {
+                        out = eval(stmt, &mut new_scope, functions);
                     }
 
                     out
@@ -121,7 +175,7 @@ pub fn eval<'src>(program: &Ast<'src>, variables: &mut HashMap<&'src str, Value>
 }
 
 parser! {
-    pub fn expr['a, 'b, I](functions: &'b Functions<'a>)(I) -> Ast<'a> where [
+    pub fn expr['a, 'b, I](functions: &'b FunctionsBuilder<'a>)(I) -> Ast<'a> where [
         I: combine::Stream<Item = char, Range = &'a str> +
         combine::RangeStreamOnce
     ] {
@@ -171,7 +225,7 @@ mod benches {
 
     use self::test::{black_box, Bencher};
 
-    use super::{eval, expr, Value, Functions};
+    use super::{eval, expr, FunctionsBuilder, Value};
 
     // First we need some helper functions. These are used with the `InbuiltFunc`
     // constructor and act as native functions, similar to how you'd add functions
@@ -333,7 +387,7 @@ someval
     #[bench]
     fn parse_deep_nesting(b: &mut Bencher) {
         b.iter(|| {
-            let functions = Functions::default();
+            let functions = FunctionsBuilder::default();
             black_box(expr(&functions).easy_parse(DEEP_NESTING))
         })
     }
@@ -341,7 +395,7 @@ someval
     #[bench]
     fn parse_many_variables(b: &mut Bencher) {
         b.iter(|| {
-            let functions = Functions::default();
+            let functions = FunctionsBuilder::default();
             black_box(expr(&functions).easy_parse(MANY_VARIABLES))
         })
     }
@@ -349,7 +403,7 @@ someval
     #[bench]
     fn parse_nested_func(b: &mut Bencher) {
         b.iter(|| {
-            let functions = Functions::default();
+            let functions = FunctionsBuilder::default();
             black_box(expr(&functions).easy_parse(NESTED_FUNC))
         })
     }
@@ -357,7 +411,7 @@ someval
     #[bench]
     fn parse_real_code(b: &mut Bencher) {
         b.iter(|| {
-            let functions = Functions::default();
+            let functions = FunctionsBuilder::default();
             black_box(expr(&functions).easy_parse(REAL_CODE))
         })
     }
@@ -378,7 +432,7 @@ someval
         ";
 
         b.iter(|| {
-            let functions = Functions::default();
+            let functions = FunctionsBuilder::default();
             black_box(expr(&functions).easy_parse(program_text))
         })
     }
@@ -400,9 +454,10 @@ someval
         let mut env = HashMap::default();
         env.insert("test", Value::InbuiltFunc(callable));
 
-        let functions = Functions::default();
+        let functions = FunctionsBuilder::default();
         let (program, _) = expr(&functions).easy_parse(DEEP_NESTING).unwrap();
 
+        let functions = functions.freeze();
         b.iter(|| black_box(eval(&program, &mut env, &functions)));
     }
 
@@ -414,12 +469,13 @@ someval
         env.insert("add", Value::InbuiltFunc(add));
         env.insert("if", Value::InbuiltFunc(if_));
 
-        let functions = Functions::default();
+        let functions = FunctionsBuilder::default();
 
         let (program, _) = ::combine::many1::<Vec<_>, _>(expr(&functions))
             .easy_parse(REAL_CODE)
             .unwrap();
 
+        let functions = functions.freeze();
         b.iter(|| {
             let mut env = env.clone();
             for line in &program {
@@ -439,21 +495,23 @@ someval
             Value::Void
         }
 
-        let functions = Functions::default();
+        let functions = FunctionsBuilder::default();
         let (program, _) = expr(&functions).easy_parse(MANY_VARIABLES).unwrap();
 
         let mut env = HashMap::default();
 
         env.insert("ignore", Value::InbuiltFunc(ignore));
 
+        let functions = functions.freeze();
         b.iter(|| black_box(eval(&program, &mut env, &functions)));
     }
 
     #[bench]
     fn run_nested_func(b: &mut Bencher) {
-        let functions = Functions::default();
+        let functions = FunctionsBuilder::default();
         let (program, _) = expr(&functions).easy_parse(NESTED_FUNC).unwrap();
         let mut env = HashMap::default();
+        let functions = functions.freeze();
         b.iter(|| black_box(eval(&program, &mut env, &functions)));
     }
 }
